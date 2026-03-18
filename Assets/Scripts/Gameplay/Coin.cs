@@ -10,6 +10,13 @@ namespace Sandbox
         private const string PlayerTag = "Player";
 
         /// <summary>
+        /// Необязательная ссылка на источник очков.
+        /// В инспекторе можно назначить объект, который реализует <see cref="IScoreService"/>.
+        /// </summary>
+        [SerializeField]
+        private MonoBehaviour _scoreServiceSource;
+
+        /// <summary>
         /// Скорость вращения монетки вокруг собственной оси Y в градусах в секунду.
         /// </summary>
         [SerializeField]
@@ -25,6 +32,24 @@ namespace Sandbox
         [SerializeField]
         [Min(0f)]
         private float _maxPlayerHeightAboveCoinToCollect = 0.6f;
+
+        private IScoreService _scoreService;
+
+        private void Awake()
+        {
+            // Интерфейсы в Unity напрямую сериализовать нельзя, поэтому используем MonoBehaviour
+            // как "указатель" на реализатор <see cref="IScoreService"/>.
+            _scoreService = _scoreServiceSource as IScoreService;
+        }
+
+        /// <summary>
+        /// Инъекция источника очков для монетки.
+        /// </summary>
+        /// <param name="scoreService">Сервис начисления очков.</param>
+        public void SetScoreService(IScoreService scoreService)
+        {
+            _scoreService = scoreService;
+        }
 
         private void Update()
         {
@@ -49,10 +74,7 @@ namespace Sandbox
                 return;
             }
 
-            if (ScoreManager.Instance != null)
-            {
-                ScoreManager.Instance.AddScore(1);
-            }
+            _scoreService?.AddScore(1);
 
             Destroy(gameObject);
         }

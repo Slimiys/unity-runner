@@ -158,6 +158,20 @@ namespace Sandbox
         private bool _debugSpawnLogging = false;
 
         /// <summary>
+        /// Необязательная стратегия выбора полосы для спавна монет.
+        /// Если не задана — используется случайная полоса.
+        /// </summary>
+        [SerializeField]
+        private MonoBehaviour _laneSelectorSource;
+
+        /// <summary>
+        /// Необязательная стратегия snap монеты по высоте к земле.
+        /// Если не задана — используется Raycast вниз (как раньше).
+        /// </summary>
+        [SerializeField]
+        private MonoBehaviour _groundSnapperSource;
+
+        /// <summary>
         /// Минимальный интервал между логами (чтобы консоль не "засорялась").
         /// </summary>
         [SerializeField]
@@ -183,6 +197,9 @@ namespace Sandbox
             return true;
         }
 
+        private ICoinLaneSelector _laneSelector;
+        private ICoinGroundSnapper _groundSnapper;
+
         /// <summary>
         /// Ограничение на число логов спавна, чтобы консоль не переполнилась.
         /// </summary>
@@ -205,6 +222,16 @@ namespace Sandbox
         [SerializeField]
         [Min(0f)]
         private float _spawnSLengthEpsilon = 0.01f;
+
+        /// <summary>
+        /// Необязательная ссылка на источник очков (реализатор <see cref="IScoreService"/>).
+        /// В Unity интерфейсы сериализовать нельзя, поэтому здесь хранится MonoBehaviour,
+        /// который реализует <see cref="IScoreService"/>.
+        /// </summary>
+        [SerializeField]
+        private MonoBehaviour _scoreServiceSource;
+
+        private IScoreService _scoreService;
 
         // Храним ссылки на созданные монеты, чтобы:
         // - удалять их позади игрока (despawn)
@@ -239,6 +266,15 @@ namespace Sandbox
                 enabled = false;
                 return;
             }
+
+            _scoreService = _scoreServiceSource as IScoreService;
+            if (_scoreService == null && ScoreManager.Instance != null)
+            {
+                _scoreService = ScoreManager.Instance;
+            }
+
+            _laneSelector = _laneSelectorSource as ICoinLaneSelector;
+            _groundSnapper = _groundSnapperSource as ICoinGroundSnapper;
             InitializeDynamicSpawn();
         }
 
@@ -530,8 +566,9 @@ namespace Sandbox
 
             while (_nextSpawnForwardOffset <= _spawnAheadDistance && (_maxActiveCoins == 0 || _spawnedCoins.Count < _maxActiveCoins))
             {
-                // 1) Выбираем случайную полосу (смещение по оси "right" трассы).
-                var laneIndex = GetRandomLaneIndex();
+                // 1) Выбираем полосу (lane) через стратегию.
+                // Если стратегия не задана — используем случайную полосу (дефолтное поведение).
+                var laneIndex = _laneSelector != null ? _laneSelector.GetLaneIndex(_trackSettings.LaneCount) : GetRandomLaneIndex();
                 var laneOffsetX = GetLaneCenterOffsetX(laneIndex);
 
                 // 2) Рассчитываем позицию и направление трассы в точке спавна,
@@ -606,6 +643,11 @@ namespace Sandbox
                 var rotation = GetRandomRotation(forwardAtSpawn);
 
                 var coin = Instantiate(_coinPrefab, worldPosition, rotation, transform);
+                var coinComponent = coin.GetComponent<Coin>();
+                if (coinComponent != null)
+                {
+                    coinComponent.SetScoreService(_scoreService);
+                }
                 _spawnedCoins.Add(coin);
                 _lastSpawnWorldPosition = worldPosition;
                 _hasLastSpawnWorldPosition = true;
@@ -691,10 +733,47 @@ namespace Sandbox
             var forward = Vector3.forward;
             var right = Vector3.right;
 
+            if (!TryGetSpawnFrameOnTrack(laneOffsetX, forwardOffset, playerDistanceAlongTrack, out var centerPos, out var fwd, out var rgt))
+            {
+                return worldPosition;
+            }
+
+            worldPosition = centerPos + rgt * (laneOffsetX + _trackSettings.LaneCenterX);
+            forward = fwd;
+            right = rgt;
+            worldPosition.y += _spawnHeight;
+
+            if (!_snapToGround)
+            {
+                forwardAtSpawn = forward.normalized;
+                success = true;
+                return worldPosition;
+            }
+
+            SnapToGround(ref worldPosition);
+            forwardAtSpawn = forward.normalized;
+            success = true;
+            return worldPosition;
+        }
+
+        /// <summary>
+        /// Пытается вычислить frame трассы в точке спавна и убедиться, что место доступно.
+        /// </summary>
+        private bool TryGetSpawnFrameOnTrack(
+            float laneOffsetX,
+            float forwardOffset,
+            float playerDistanceAlongTrack,
+            out Vector3 centerPos,
+            out Vector3 forwardAtSpawn,
+            out Vector3 rightAtSpawn)
+        {
+            centerPos = Vector3.zero;
+            forwardAtSpawn = Vector3.forward;
+            rightAtSpawn = Vector3.right;
+
             if (_trackPath == null || !_trackPath.IsValidPath)
             {
-                // Если трасса ещё не существует/не готова — монетки не спавним.
-                return worldPosition;
+                return false;
             }
 
             var sSpawn = playerDistanceAlongTrack + forwardOffset;
@@ -704,37 +783,42 @@ namespace Sandbox
             // поэтому по факту места мы не узнаем. Явно проверяем границы.
             if (sSpawn < 0f || sSpawn > trackTotalLen - _spawnSLengthEpsilon)
             {
-                return worldPosition;
+                return false;
             }
 
-            if (_trackPath.TryEvaluateFrame(sSpawn, out var centerPos, out var fwd, out var rgt))
+            if (_trackPath.TryEvaluateFrame(sSpawn, out centerPos, out var fwd, out var rgt))
             {
-                worldPosition = centerPos + rgt * (laneOffsetX + _trackSettings.LaneCenterX);
-                forward = fwd;
-                right = rgt;
-                success = true;
-            }
-            else
-            {
-                if (ShouldDebugLog())
-                {
-                    var trackRuntimeVer = _trackPath.RuntimeVersion;
-                    Debug.LogWarning(
-                        $"[{nameof(CoinSpawner)}] GetSpawnWorldPosition: TryEvaluateFrame=false. " +
-                        $"sSpawn={sSpawn:F3}, playerS={playerDistanceAlongTrack:F3}, forwardOffset={forwardOffset:F3}, " +
-                        $"trackTotalLen={trackTotalLen:F3}, trackRuntimeVer={trackRuntimeVer}, laneOffsetX={laneOffsetX:F3}");
-                }
-                return worldPosition;
+                forwardAtSpawn = fwd;
+                rightAtSpawn = rgt;
+                return true;
             }
 
-            // Базовая высота (если "липучка" выключена) — просто на высоте _spawnHeight от позиции.
-            worldPosition.y += _spawnHeight;
-
-            if (!_snapToGround)
+            if (ShouldDebugLog())
             {
-                // Если не "прилипляем" к земле — просто возвращаем позицию и направление forward.
-                forwardAtSpawn = forward.normalized;
-                return worldPosition;
+                var trackRuntimeVer = _trackPath.RuntimeVersion;
+                Debug.LogWarning(
+                    $"[{nameof(CoinSpawner)}] TryGetSpawnFrameOnTrack: TryEvaluateFrame=false. " +
+                    $"sSpawn={sSpawn:F3}, playerS={playerDistanceAlongTrack:F3}, forwardOffset={forwardOffset:F3}, " +
+                    $"trackTotalLen={trackTotalLen:F3}, trackRuntimeVer={trackRuntimeVer}, laneOffsetX={laneOffsetX:F3}");
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Привязывает Y позиции монеты к поверхности трассы (Raycast вниз).
+        /// </summary>
+        private void SnapToGround(ref Vector3 worldPosition)
+        {
+            if (_groundSnapper != null)
+            {
+                _groundSnapper.SnapToGround(
+                    ref worldPosition,
+                    _groundMask,
+                    _groundRaycastStartHeight,
+                    _groundRaycastDistance,
+                    _spawnHeight);
+                return;
             }
 
             // Начинаем луч выше и стреляем вниз, чтобы найти поверхность трассы даже на неровностях.
@@ -750,9 +834,6 @@ namespace Sandbox
                 // Ставим монету над поверхностью.
                 worldPosition.y = hit.point.y + _spawnHeight;
             }
-            
-            forwardAtSpawn = forward.normalized;
-            return worldPosition;
         }
 
         private Vector3 GetForward()

@@ -13,6 +13,51 @@ namespace Sandbox
         private const float GroundLayerUnsetThreshold = 0f;
 
         /// <summary>
+        /// Отвечает только за проверку контакта игрока с землёй.
+        /// </summary>
+        private sealed class GroundChecker
+        {
+            private readonly Vector3 _checkOffset;
+            private readonly float _checkRadius;
+            private readonly LayerMask _groundLayer;
+
+            public GroundChecker(Vector3 checkOffset, float checkRadius, LayerMask groundLayer)
+            {
+                _checkOffset = checkOffset;
+                _checkRadius = checkRadius;
+                _groundLayer = groundLayer;
+            }
+
+            public bool IsGrounded(Transform playerRoot)
+            {
+                var checkPosition = playerRoot.position + _checkOffset;
+                return Physics.CheckSphere(checkPosition, _checkRadius, _groundLayer, QueryTriggerInteraction.Ignore);
+            }
+        }
+
+        /// <summary>
+        /// Отвечает только за запуск прыжка (вертикальная скорость + импульс).
+        /// </summary>
+        private sealed class JumpExecutor
+        {
+            private readonly float _jumpForce;
+
+            public JumpExecutor(float jumpForce)
+            {
+                _jumpForce = jumpForce;
+            }
+
+            public void Jump(Rigidbody playerRigidbody)
+            {
+                var velocity = playerRigidbody.linearVelocity;
+                // Сбрасываем вертикальную скорость перед прыжком, чтобы прыжок всегда был одинаковым.
+                velocity.y = 0f;
+                playerRigidbody.linearVelocity = velocity;
+                playerRigidbody.AddForce(Vector3.up * _jumpForce, ForceMode.Impulse);
+            }
+        }
+
+        /// <summary>
         /// Текущая скорость игрока (в мировых координатах), взятая из Rigidbody.
         /// </summary>
         /// <remarks>
@@ -183,6 +228,9 @@ namespace Sandbox
         // Фактическая скорость вперёд (для анимаций/диагностики).
         private float _actualForwardSpeed;
 
+        private GroundChecker _groundChecker;
+        private JumpExecutor _jumpExecutor;
+
         private void Awake()
         {
             _playerRigidbody = GetComponent<Rigidbody>();
@@ -216,6 +264,10 @@ namespace Sandbox
                 enabled = false;
                 return;
             }
+
+            // Делаем из "параметров инспектора" маленькие неизменяемые помощники.
+            _groundChecker = new GroundChecker(_groundCheckOffset, _groundCheckRadius, _groundLayer);
+            _jumpExecutor = new JumpExecutor(_jumpForce);
         }
 
         private void OnDestroy()
@@ -547,24 +599,16 @@ namespace Sandbox
             // а физика и движение — в FixedUpdate.
         }
 
-        private bool CheckIsGrounded()
-        {
-            Vector3 checkPosition = transform.position + _groundCheckOffset;
-            // Physics.CheckSphere — простая и надёжная проверка «касания земли»:
-            // если сфера пересекает коллайдеры на слое земли, считаем что игрок стоит на поверхности.
-            return Physics.CheckSphere(checkPosition, _groundCheckRadius, _groundLayer, QueryTriggerInteraction.Ignore);
-        }
+        private bool CheckIsGrounded() => _groundChecker != null && _groundChecker.IsGrounded(transform);
 
         private void Jump()
         {
-            Vector3 velocity = _playerRigidbody.linearVelocity;
-            // Сбрасываем вертикальную скорость перед прыжком, чтобы прыжок всегда был одинаковым,
-            // даже если игрок уже немного падает/подпрыгивает на неровностях.
-            velocity.y = 0f;
-            _playerRigidbody.linearVelocity = velocity;
+            if (_jumpExecutor == null || _playerRigidbody == null)
+            {
+                return;
+            }
 
-            // Импульс вверх: резкий толчок, подходящий для прыжка.
-            _playerRigidbody.AddForce(Vector3.up * _jumpForce, ForceMode.Impulse);
+            _jumpExecutor.Jump(_playerRigidbody);
         }
 
         /// <summary>
