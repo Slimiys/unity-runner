@@ -826,7 +826,7 @@ namespace Sandbox
             var ray = new Ray(rayOrigin, Vector3.down);
 
             // Если маска не задана (value == 0), Raycast по умолчанию будет попадать во всё,
-            // но это может "цеплять" лишние объекты. Поэтому в учебном проекте лучше явно задавать слой земли.
+            // но это может "цеплять" лишние объекты. Поэтому в проекте лучше явно задавать слой земли.
             var mask = _groundMask.value != 0 ? _groundMask.value : Physics.DefaultRaycastLayers;
 
             if (Physics.Raycast(ray, out var hit, _groundRaycastDistance, mask, QueryTriggerInteraction.Ignore))
