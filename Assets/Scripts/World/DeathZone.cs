@@ -11,12 +11,16 @@ namespace Sandbox
 
         private void OnTriggerEnter(Collider other)
         {
-            if (!other.CompareTag(PlayerTag))
+            // В зону может войти как корневой объект игрока, так и его дочерний коллайдер.
+            // Поэтому проверяем тег сначала у вошедшего коллайдера, а затем у родителя.
+            if (!other.CompareTag(PlayerTag) && (other.transform.parent == null || !other.transform.parent.CompareTag(PlayerTag)))
             {
                 return;
             }
 
-            var respawnable = other.GetComponent<IRespawnable>();
+            // IRespawnable (например PlayerController) обычно находится на корневом объекте.
+            // Если в триггер вошёл дочерний объект, ищем компонент вверх по иерархии.
+            var respawnable = other.GetComponentInParent<IRespawnable>();
             if (respawnable == null)
             {
                 return;
